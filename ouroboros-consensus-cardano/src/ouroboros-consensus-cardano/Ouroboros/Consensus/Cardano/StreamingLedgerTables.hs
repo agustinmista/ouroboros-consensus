@@ -29,6 +29,7 @@ import Cardano.Slotting.Time
 import qualified Codec.CBOR.Encoding
 import Control.ResourceRegistry
 import Control.Tracer (nullTracer)
+import qualified Data.Foldable as F
 import Data.Proxy
 import Data.SOP.BasicFunctors
 import Data.SOP.Functors
@@ -143,10 +144,11 @@ limits =
 
 fromLSM ::
   FilePath ->
+  Maybe String ->
   L EmptyMK ->
   ResourceRegistry IO ->
   IO (YieldArgs L IO)
-fromLSM fp hint reg = do
+fromLSM fp mSuffix hint reg = do
   (_, SomeHasFSAndBlockIO hasFS blockIO) <- stdMkBlockIOFS fp reg
   salt <- fst . genWord64 <$> newStdGen
   (_, session) <-
@@ -154,15 +156,18 @@ fromLSM fp hint reg = do
   tb <-
     allocate
       reg
-      ( \_ ->
+      ( \_ -> do
+          F.traverse_ print =<< listSnapshots session
           openTableFromSnapshot
             session
             ( toSnapshotName $
-                show $
-                  unSlotNo $
-                    withOrigin (error "impossible") id $
-                      pointSlot $
-                        Ouroboros.Consensus.Ledger.Abstract.getTip hint
+                maybe id (\su sl -> sl <> "_" <> su) mSuffix $
+                  ( show $
+                      unSlotNo $
+                        withOrigin (error "impossible") id $
+                          pointSlot $
+                            Ouroboros.Consensus.Ledger.Abstract.getTip hint
+                  )
             )
             (SnapshotLabel $ T.pack "UTxO table")
       )

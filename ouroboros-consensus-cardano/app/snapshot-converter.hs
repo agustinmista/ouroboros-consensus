@@ -311,23 +311,23 @@ main = withStdTerminalHandles $ do
   run conf args = do
     ccfg <- configCodec . pInfoConfig <$> mkProtocolInfo args
     let
-      getState :: SomeHasFS IO -> FsPath -> IO (ExtLedgerState (CardanoBlock StandardCrypto) EmptyMK, CRC)
+      getState :: SomeHasFS IO -> FsPath -> IO (LedgerState (CardanoBlock StandardCrypto) EmptyMK, CRC)
       getState fs path = do
         either
           (throwIO . SnapshotError . InitFailureRead @(CardanoBlock StandardCrypto) . ReadSnapshotFailed)
-          pure
+          (pure . first ledgerState)
           =<< runExceptT (readExtLedgerState fs (decodeDiskExtLedgerState ccfg) decode path)
 
     (st, f) <- case from conf of
       Mem fp@(pathToDiskSnapshot -> Just (fs, path, _)) -> do
-        -- (st, _) <- getState fs path
-        pure (lstate, fromInMemory fp)
+        (st, _) <- getState fs path
+        pure (st, fromInMemory fp)
       LMDB fp@(pathToDiskSnapshot -> Just (fs, path, _)) -> do
-        -- (st, _) <- getState (Debug.trace (show fp) fs) (Debug.traceShowId path </> mkFsPath ["state"])
-        pure (lstate, fromLMDB (fp <> "/tables"))
-      LSM fp@(pathToDiskSnapshot -> Just (fs, path, _)) fp2 -> do
-        -- (st, _) <- getState fs path
-        pure (lstate, fromLSM fp2)
+        (st, _) <- getState (Debug.trace (show fp) fs) (Debug.traceShowId path </> mkFsPath ["state"])
+        pure (st, fromLMDB (fp <> "/tables"))
+      LSM fp@(pathToDiskSnapshot -> Just (fs, path, ds)) fp2 -> do
+        (st, _) <- getState fs (Debug.traceShowId path </> mkFsPath ["state"])
+        pure (st, fromLSM fp2 (dsSuffix ds))
     let t = case to conf of
           Mem fp@(pathToDiskSnapshot -> Just (fs, path, _)) ->
             toInMemory fp

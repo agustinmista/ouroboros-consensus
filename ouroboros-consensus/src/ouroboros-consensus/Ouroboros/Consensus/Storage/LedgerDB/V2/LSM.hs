@@ -14,6 +14,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 -- | Implementation of the 'LedgerTablesHandle' interface with LSM trees.
@@ -47,6 +48,7 @@ module Ouroboros.Consensus.Storage.LedgerDB.V2.LSM
   , LSM.SnapshotLabel (LSM.SnapshotLabel)
   , LSM.openTableFromSnapshot
   , LSM.closeTable
+  , LSM.listSnapshots
   ) where
 
 import Cardano.Binary as CBOR
@@ -72,6 +74,7 @@ import qualified Data.Vector.Primitive as VP
 import Data.Void
 import Database.LSMTree (Session, Table)
 import qualified Database.LSMTree as LSM
+import qualified Debug.Trace as Debug
 import NoThunks.Class
 import Ouroboros.Consensus.Block
 import Ouroboros.Consensus.Config
@@ -119,8 +122,8 @@ toTxOutBytes st txout =
    in TxOutBytes $ LSM.RawBytes (VP.Vector 0 (PBA.sizeofByteArray barr) barr)
 
 fromTxOutBytes :: IndexedMemPack (l EmptyMK) (TxOut l) => l EmptyMK -> TxOutBytes -> TxOut l
-fromTxOutBytes st (TxOutBytes (LSM.RawBytes (VP.Vector _ _ barr))) =
-  case indexedUnpack st barr of
+fromTxOutBytes st (TxOutBytes (LSM.RawBytes (VP.force -> (VP.Vector off _ barr)))) =
+  case indexedUnpackLeftOver' st barr of
     Left err ->
       error $
         unlines
@@ -128,7 +131,7 @@ fromTxOutBytes st (TxOutBytes (LSM.RawBytes (VP.Vector _ _ barr))) =
           , "This will likely result in a restart-crash loop."
           , "The error: " <> show err
           ]
-    Right v -> v
+    Right (v, _) -> v
 
 instance LSM.SerialiseValue TxOutBytes where
   serialiseValue = unTxOutBytes
@@ -148,8 +151,8 @@ toTxInBytes _ txin =
    in TxInBytes $ LSM.RawBytes (VP.Vector 0 (PBA.sizeofByteArray barr) barr)
 
 fromTxInBytes :: MemPack (TxIn l) => Proxy l -> TxInBytes -> TxIn l
-fromTxInBytes _ (TxInBytes (LSM.RawBytes (VP.Vector _ _ barr))) =
-  case unpack barr of
+fromTxInBytes _ (TxInBytes (LSM.RawBytes (VP.force -> (VP.Vector off _ barr)))) =
+  case unpackLeftOver' barr of
     Left err ->
       error $
         unlines
@@ -157,7 +160,7 @@ fromTxInBytes _ (TxInBytes (LSM.RawBytes (VP.Vector _ _ barr))) =
           , "This will likely result in a restart-crash loop."
           , "The error: " <> show err
           ]
-    Right v -> v
+    Right (v, _) -> v
 
 instance LSM.SerialiseKey TxInBytes where
   serialiseKey = unTxInBytes

@@ -17,6 +17,8 @@ module Ouroboros.Consensus.Util.IndexedMemPack
   , indexedPackByteArray
   , indexedUnpackError
   , indexedUnpack
+  , indexedUnpackLeftOver'
+  , unpackLeftOver'
   ) where
 
 import qualified Control.Monad as Monad
@@ -86,6 +88,18 @@ indexedUnpackLeftOver idx b = do
   Monad.when (consumedBytes > len) $ errorLeftOver (indexedTypeName @idx @a idx) consumedBytes len
   pure res
 {-# INLINEABLE indexedUnpackLeftOver #-}
+
+indexedUnpackLeftOver' ::
+  forall idx a b.
+  (IndexedMemPack idx a, Buffer b, HasCallStack) => idx -> b -> Either SomeError (a, Int)
+indexedUnpackLeftOver' idx = first fromMultipleErrors . runFailAgg . indexedUnpackLeftOver idx
+{-# INLINEABLE indexedUnpackLeftOver' #-}
+
+unpackLeftOver' ::
+  forall a b.
+  (MemPack a, Buffer b, HasCallStack) => b -> Either SomeError (a, Int)
+unpackLeftOver' = first fromMultipleErrors . runFailAgg . unpackLeftOver
+{-# INLINEABLE unpackLeftOver' #-}
 
 errorLeftOver :: HasCallStack => String -> Int -> Int -> a
 errorLeftOver name consumedBytes len =
