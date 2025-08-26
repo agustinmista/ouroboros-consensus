@@ -18,6 +18,7 @@
 module Main (main) where
 
 import Cardano.Crypto.Init (cryptoInit)
+import Cardano.Tools.DBAnalyser.Block.Cardano
 import Cardano.Tools.DBAnalyser.Run
 import Cardano.Tools.DBAnalyser.Types
 import Cardano.Tools.GitRev (gitRev)
@@ -38,13 +39,9 @@ import Options.Applicative
 main :: IO ()
 main = withStdTerminalHandles $ do
   cryptoInit
-  (conf, blocktype) <- getCmdLine
-  void $ case blocktype of
-    ByronBlock args -> analyse conf args
-    ShelleyBlock args -> analyse conf args
-    CardanoBlock args -> analyse conf args
+  void $ uncurry analyse =<< getCmdLine
 
-getCmdLine :: IO (DBAnalyserConfig, BlockType)
+getCmdLine :: IO (DBAnalyserConfig, CardanoBlockArgs)
 getCmdLine = execParser opts
  where
   opts =
