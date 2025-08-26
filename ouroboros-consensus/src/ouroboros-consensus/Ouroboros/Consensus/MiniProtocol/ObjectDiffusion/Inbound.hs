@@ -8,12 +8,14 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-partial-fields #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DeriveAnyClass #-}
 
 module Ouroboros.Consensus.MiniProtocol.ObjectDiffusion.Inbound
   ( objectDiffusionInbound
   , TraceObjectDiffusionInbound (..)
   , ObjectDiffusionInboundError (..)
-  , ProcessedObjectCount (..)
+  , NumObjectsProcessed (..)
   ) where
 
 import Cardano.Prelude (catMaybes)
@@ -39,24 +41,21 @@ import Ouroboros.Consensus.MiniProtocol.ObjectDiffusion.ObjectPool.API
 import Ouroboros.Network.NodeToNode.Version (NodeToNodeVersion)
 import Ouroboros.Network.Protocol.ObjectDiffusion.Inbound
 import Ouroboros.Network.Protocol.ObjectDiffusion.Type
+import Data.Word (Word64)
 
 -- Note: This module is inspired from TxSubmission inbound side.
 
-data ProcessedObjectCount objectId object = ProcessedObjectCount
-  { pocAcceptedObjectsCount :: Int
-  -- ^ Just accepted this many objects.
-  , pocRejectedObjectsCount :: Int
-  -- ^ Just rejected this many objects.
-  }
+newtype NumObjectsProcessed
+  = NumObjectsProcessed
+    { getNumObjectsProcessed :: Word64
+    }
   deriving (Eq, Show)
 
--- TODO: should we improve the tracing in adding more detail when e.g. IDs are
--- received ?
 data TraceObjectDiffusionInbound objectId object
   = -- | Number of objects just about to be inserted.
     TraceObjectDiffusionCollected Int
   | -- | Just processed object pass/fail breakdown.
-    TraceObjectDiffusionProcessed (ProcessedObjectCount objectId object)
+    TraceObjectDiffusionProcessed NumObjectsProcessed
   | -- | Inbound received 'MsgDone'
     TraceObjectInboundTerminated
   | TraceObjectInboundCanRequestMoreObjects Int
@@ -76,11 +75,11 @@ instance Exception ObjectDiffusionInboundError where
   displayException ProtocolErrorObjectIdsNotRequested =
     "The peer replied with more objectIds than we asked for."
   displayException ProtocolErrorObjectIdAlreadyKnown =
-    "The peer replied with an objectId we already know about."
+    "The peer replied with an objectId that it has already sent us previously."
   displayException ProtocolErrorObjectIdsDuplicate =
     "The peer replied with a batch of objectIds containing a duplicate."
 
--- | Information maintained internally in the 'objectDiffusionInbound' inbound
+-- | Information maintained internally in the 'objectDiffusionInbound'
 -- implementation.
 data InboundSt objectId object = InboundSt
   { numIdsInFlight :: !NumObjectIdsReq
@@ -109,13 +108,8 @@ data InboundSt objectId object = InboundSt
   -- for more object IDs. Their corresponding IDs have already been removed
   -- from 'outstandingFifo'.
   }
-  deriving (Show, Generic)
-
-instance
-  ( NoThunks objectId
-  , NoThunks object
-  ) =>
-  NoThunks (InboundSt objectId object)
+  deriving stock (Show, Generic)
+  deriving anyclass NoThunks
 
 initialInboundSt :: InboundSt objectId object
 initialInboundSt = InboundSt 0 Seq.empty Set.empty Map.empty 0
@@ -231,7 +225,7 @@ objectDiffusionInbound tracer (maxFifoLength, maxNumIdsToReq, maxNumObjectsToReq
           -- objectIds. Since this is the only thing to do now, we make this a
           -- blocking call.
           traceWith tracer (TraceObjectInboundCannotRequestMoreObjects (natToInt n))
-          pure $ continueWithState (goReqObjectIdsBlocking) st
+          pure $ continueWithState goReqObjectIdsBlocking st
 
     -- We have pipelined some requests, so there are some replies in flight.
     Succ n' ->
@@ -248,14 +242,17 @@ objectDiffusionInbound tracer (maxFifoLength, maxNumIdsToReq, maxNumObjectsToReq
               (collectAndContinueWithState (goCollect n') st)
         else do
           traceWith tracer (TraceObjectInboundCannotRequestMoreObjects (natToInt n))
-          -- In this case there is nothing else to do than collect replies so
-          -- we block until we collect a reply.
+          -- In this case we can theoretically only collect replies or request
+          -- new object IDs. 
           --
-          -- TODO: *The comment below originating from TX submission, that I
-          --        do not understand, but I think it should be kept*
-          -- It's important not to pipeline more requests for objectIds when we
-          -- have no objects to ask for, since (with no other guard) this will
-          -- put us into a busy-polling loop.
+          -- But it's important not to pipeline more requests for objectIds now
+          -- because if we did, then immediately after sending the request (but
+          -- having not yet received a response to either this or the other
+          -- pipelined requests), we would directly re-enter this code path, 
+          -- resulting us in filling the pipeline with an unbounded number of
+          -- requests.
+          -- 
+          -- So we instead block until we collect a reply.
           pure $
             CollectPipelined
               Nothing
@@ -336,14 +333,10 @@ objectDiffusionInbound tracer (maxFifoLength, maxNumIdsToReq, maxNumObjectsToReq
 
       -- TODO: Certificate / Vote validation
 
-      () <- opwAddObjects objectsToAck
+      opwAddObjects objectsToAck
       traceWith tracer $
         TraceObjectDiffusionProcessed
-          ProcessedObjectCount
-            { pocAcceptedObjectsCount = length objectsToAck
-            , pocRejectedObjectsCount = 0
-            }
-
+          (NumObjectsProcessed (fromIntegral $ length objectsToAck))
       continueWithStateM
         (go n)
         st
