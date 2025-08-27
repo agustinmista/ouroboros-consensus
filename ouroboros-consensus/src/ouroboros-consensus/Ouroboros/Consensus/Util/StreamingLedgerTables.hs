@@ -53,6 +53,7 @@ import Streaming
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 import System.FS.API
+import qualified System.FilePath as F
 
 data Decoders l
   = Decoders
@@ -124,7 +125,7 @@ sink ::
   SinkArgs l m -> Sink l m r
 sink = \case
   SinkLMDB chunkSize write copy -> sinkLmdbS chunkSize write copy
-  SinkLSM chunkSize session -> sinkLsmS chunkSize session
+  SinkLSM chunkSize snapName session -> sinkLsmS chunkSize snapName session
   SinkInMemory chunkSize encK encV shfs fp -> sinkInMemoryS chunkSize encK encV shfs fp
 
 data SinkArgs l m
@@ -137,6 +138,8 @@ data SinkArgs l m
   | SinkLSM
       -- | Chunk size
       Int
+      -- | Snap name
+      String
       (Session m)
   | SinkLMDB
       -- | Chunk size
@@ -212,8 +215,8 @@ yieldInMemoryS ::
   (forall s. Decoder s (TxIn l)) ->
   (forall s. Decoder s (TxOut l)) ->
   Yield l m
-yieldInMemoryS mkFs fp decK decV _ k =
-  streamingFile (mkFs $ MountPoint fp) (mkFsPath ["tables", "tvar"]) $ \s -> do
+yieldInMemoryS mkFs (F.splitFileName -> (fp, fn)) decK decV _ k =
+  streamingFile (mkFs $ MountPoint fp) (mkFsPath [fn]) $ \s -> do
     k $ yieldCborMapS decK decV s
 
 {-------------------------------------------------------------------------------
@@ -297,14 +300,15 @@ sinkLsmS ::
   , GetTip l
   ) =>
   Int ->
+  String ->
   Session m ->
   Sink l m r
-sinkLsmS writeChunkSize session st s = do
+sinkLsmS writeChunkSize snapName session st s = do
   tb :: UTxOTable m <- lift $ newTable session
   r <- go tb writeChunkSize mempty s
   lift $
     saveSnapshot
-      (toSnapshotName (show $ unSlotNo $ withOrigin (error "impossible") id $ pointSlot $ getTip st))
+      (toSnapshotName snapName)
       (SnapshotLabel $ T.pack "UTxO table")
       tb
   lift $ closeTable tb

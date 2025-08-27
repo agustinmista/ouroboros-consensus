@@ -2,9 +2,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE PartialTypeSignatures #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -108,8 +106,8 @@ fromInMemory fp (HardForkLedgerState (HardForkState idx)) _ =
           (eraDecoder @era decodeMemPack)
           (eraDecoder @era $ toCardanoTxOut <$> decShareCBOR certInterns)
 
-fromLMDB :: FilePath -> L EmptyMK -> ResourceRegistry IO -> IO (YieldArgs L IO)
-fromLMDB fp hint reg = do
+fromLMDB :: FilePath -> LMDB.LMDBLimits -> L EmptyMK -> ResourceRegistry IO -> IO (YieldArgs L IO)
+fromLMDB fp limits hint reg = do
   tempDir <- getCanonicalTemporaryDirectory
   let lmdbTemp = tempDir FilePath.</> "lmdb_streaming"
   removePathForcibly lmdbTemp
@@ -134,41 +132,24 @@ fromLMDB fp hint reg = do
   (_, bsvh) <- allocate reg (\_ -> bsValueHandle bs) bsvhClose
   pure (YieldLMDB 1000 bsvh)
 
-limits :: LMDB.LMDBLimits
-limits =
-  LMDB.LMDBLimits
-    { LMDB.lmdbMapSize = 16 * 1024 * 1024 * 1024
-    , LMDB.lmdbMaxDatabases = 10
-    , LMDB.lmdbMaxReaders = 16
-    }
-
 fromLSM ::
   FilePath ->
-  Maybe String ->
+  String ->
   L EmptyMK ->
   ResourceRegistry IO ->
   IO (YieldArgs L IO)
-fromLSM fp mSuffix hint reg = do
+fromLSM fp snapName _ reg = do
   (_, SomeHasFSAndBlockIO hasFS blockIO) <- stdMkBlockIOFS fp reg
   salt <- fst . genWord64 <$> newStdGen
   (_, session) <-
-    allocate reg (\_ -> openSession nullTracer hasFS blockIO salt (mkFsPath ["lsm"])) closeSession
+    allocate reg (\_ -> openSession nullTracer hasFS blockIO salt (mkFsPath [])) closeSession
   tb <-
     allocate
       reg
-      ( \_ -> do
-          F.traverse_ print =<< listSnapshots session
+      ( \_ ->
           openTableFromSnapshot
             session
-            ( toSnapshotName $
-                maybe id (\su sl -> sl <> "_" <> su) mSuffix $
-                  ( show $
-                      unSlotNo $
-                        withOrigin (error "impossible") id $
-                          pointSlot $
-                            Ouroboros.Consensus.Ledger.Abstract.getTip hint
-                  )
-            )
+            (toSnapshotName snapName)
             (SnapshotLabel $ T.pack "UTxO table")
       )
       closeTable
@@ -176,10 +157,11 @@ fromLSM fp mSuffix hint reg = do
 
 toLMDB ::
   FilePath ->
+  LMDB.LMDBLimits ->
   L EmptyMK ->
   ResourceRegistry IO ->
   IO (SinkArgs L IO)
-toLMDB fp hint reg = do
+toLMDB fp limits hint reg = do
   tempDir <- getCanonicalTemporaryDirectory
   let lmdbTemp = tempDir FilePath.</> "lmdb_streaming"
   removePathForcibly lmdbTemp
@@ -235,18 +217,18 @@ toInMemory fp (HardForkLedgerState (HardForkState idx)) _ = do
 
 toLSM ::
   FilePath ->
+  String ->
   L EmptyMK ->
   ResourceRegistry IO ->
   IO (SinkArgs L IO)
-toLSM fp _ reg = do
+toLSM fp snapName _ reg = do
   removePathForcibly fp
   System.Directory.createDirectory fp
-  System.Directory.createDirectory (fp ++ "/lsm")
   (_, SomeHasFSAndBlockIO hasFS blockIO) <- stdMkBlockIOFS fp reg
   salt <- fst . genWord64 <$> newStdGen
   (_, session) <-
-    allocate reg (\_ -> newSession nullTracer hasFS blockIO salt (mkFsPath ["lsm"])) closeSession
-  pure (SinkLSM 1000 session)
+    allocate reg (\_ -> newSession nullTracer hasFS blockIO salt (mkFsPath [])) closeSession
+  pure (SinkLSM 1000 snapName session)
 
 lstate :: L EmptyMK
 lstate =
